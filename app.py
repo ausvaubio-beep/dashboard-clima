@@ -7,36 +7,33 @@ from streamlit_autorefresh import st_autorefresh
 
 # 1. Configuración de la página
 st.set_page_config(page_title="Monitoreo Climático", layout="wide", initial_sidebar_state="expanded")
+
+# FORZAR ACTUALIZACIÓN AUTOMÁTICA DE LA PANTALLA CADA 5 MINUTOS (300,000 milisegundos)
+st_autorefresh(interval=300000, limit=None, key="actualizacion_clima")
+
 st.title("🌤️ Dashboard Meteorológico - Nativas del Centro")
 
-st_autorefresh(interval=600000, limit=None, key="actualizacion_clima")
 URL_CSV = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSAydRB-41OE3tP-jW2OA4RbMj9RQcNHgEg2GLC06ypFC4SLO1F-tJrqvJ0gt_d7xEaLwO6Dj3k4zBc/pub?gid=0&single=true&output=csv"
 
-@st.cache_data(ttl=600)
+# Redujimos el caché a 5 minutos (300 segundos) para que empate con Google
+@st.cache_data(ttl=300)
 def cargar_datos():
     df = pd.read_csv(URL_CSV)
     df.columns = df.columns.str.strip()
     df['Fecha y Hora'] = pd.to_datetime(df['Fecha y Hora'], dayfirst=True)
     
-    # ORDENAR ASCENDENTE PARA CÁLCULOS MATEMÁTICOS DE LLUVIA
     df = df.sort_values('Fecha y Hora', ascending=True).reset_index(drop=True)
     
-    # 1. Cálculo del VPD
+    # Cálculos
     T = df['Temp Exterior']
     RH = df['Hum Exterior']
     SVP = 0.611 * np.exp((17.27 * T) / (T + 237.3)) 
     df['VPD'] = SVP * (1 - (RH / 100))
     
-    # 2. CÁLCULO DE PRECIPITACIÓN POR INTERVALOS
-    # diff() calcula cuánta lluvia nueva entró en la ventana respecto a hace 10 min. 
-    # clip(lower=0) elimina negativos cuando la ventana móvil de 24h suelta lluvia vieja.
     df['Lluvia 10m'] = df['Lluvia 24h'].diff().fillna(0).clip(lower=0)
-    # Suma móvil para 30 minutos (3 periodos de 10m)
     df['Lluvia 30m'] = df['Lluvia 10m'].rolling(window=3, min_periods=1).sum()
-    # Suma móvil para 1 hora (6 periodos de 10m)
     df['Lluvia 1h'] = df['Lluvia 10m'].rolling(window=6, min_periods=1).sum()
     
-    # VOLVER A ORDENAR DESCENDENTE PARA EL DASHBOARD
     df = df.sort_values('Fecha y Hora', ascending=False).reset_index(drop=True)
     return df
 
@@ -47,7 +44,13 @@ try:
     # BARRA LATERAL: FILTROS
     # ---------------------------------------------------------
     st.sidebar.header("⚙️ Análisis y Filtros")
-    st.sidebar.markdown("Usa estos controles para filtrar las gráficas y estadísticos.")
+    st.sidebar.markdown("Última actualización de la base de datos:")
+    
+    # Mostramos la hora exacta del último registro para que sepas si está fresco
+    ultimo_registro = datos['Fecha y Hora'].iloc[0].strftime('%d/%m/%Y %H:%M:%S')
+    st.sidebar.info(f"🕒 {ultimo_registro}")
+    
+    st.sidebar.markdown("Usa estos controles para filtrar las gráficas.")
     
     fecha_min = datos['Fecha y Hora'].min().date()
     fecha_max = datos['Fecha y Hora'].max().date()
@@ -110,18 +113,13 @@ try:
     st.markdown("---")
 
     # ---------------------------------------------------------
-    # SECCIÓN 3: GRÁFICOS INTERACTIVOS (Ahora reaccionan al filtro)
+    # SECCIÓN 3: GRÁFICOS INTERACTIVOS 
     # ---------------------------------------------------------
-    
-    # NUEVA GRÁFICA: Tendencia de Precipitación a corto plazo
     st.subheader("☔ Tendencias de Precipitación Acumulada")
     fig_precip = go.Figure()
-    # Barra para los 10 minutos
     fig_precip.add_trace(go.Bar(x=datos_filtrados['Fecha y Hora'], y=datos_filtrados['Lluvia 10m'], name='Caída por 10 min', marker_color='#87CEFA'))
-    # Líneas para los acumulados
     fig_precip.add_trace(go.Scatter(x=datos_filtrados['Fecha y Hora'], y=datos_filtrados['Lluvia 30m'], name='Acumulado 30 min', line=dict(color='#4169E1')))
     fig_precip.add_trace(go.Scatter(x=datos_filtrados['Fecha y Hora'], y=datos_filtrados['Lluvia 1h'], name='Acumulado 1 Hora', line=dict(color='#0000CD')))
-    
     fig_precip.update_layout(yaxis_title="Precipitación (mm)", hovermode="x unified", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
     st.plotly_chart(fig_precip, use_container_width=True)
 
@@ -150,7 +148,7 @@ try:
         st.plotly_chart(fig_wind, use_container_width=True)
         
     with col_graf4:
-        st.subheader("📊 Climograma de Extremos Diarios")
+        st.subheader("📊 Climograma Diurno")
         diario = datos_filtrados.groupby(datos_filtrados['Fecha y Hora'].dt.date).agg(
             Temp_Max=('Temp Exterior', 'max'),
             Temp_Min=('Temp Exterior', 'min'),
@@ -158,17 +156,13 @@ try:
         ).reset_index()
 
         fig_clima = go.Figure()
-        
-        # INVERSIÓN DE EJES: Lluvia ahora es el eje Y primario (se dibuja primero, al fondo)
         fig_clima.add_trace(go.Bar(x=diario['Fecha y Hora'], y=diario['Lluvia_Total'], name='Lluvia (mm)', marker_color='#4E89AE', yaxis='y'))
-        
-        # Temp es el eje Y secundario (se dibuja sobre las barras)
         fig_clima.add_trace(go.Scatter(x=diario['Fecha y Hora'], y=diario['Temp_Max'], name='Temp Máx', mode='lines+markers', line=dict(color='#ED6663'), yaxis='y2'))
         fig_clima.add_trace(go.Scatter(x=diario['Fecha y Hora'], y=diario['Temp_Min'], name='Temp Mín', mode='lines+markers', line=dict(color='#85C88A'), yaxis='y2'))
 
         fig_clima.update_layout(
             yaxis=dict(title='Precipitación (mm)'),
-            yaxis2=dict(title='Temperatura (°C)', overlaying='y', side='right'), # Eje derecho para Temp
+            yaxis2=dict(title='Temperatura (°C)', overlaying='y', side='right'), 
             hovermode="x unified",
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
         )
